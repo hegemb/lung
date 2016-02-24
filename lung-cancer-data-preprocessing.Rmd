@@ -1,0 +1,175 @@
+---
+title: "lung-cancer-data-preprocessing"
+author: "Hege MB"
+date: "4 Feb 2016"
+output: html_document
+---
+
+```{r import libraries}
+#############################################
+## import libaries
+#############################################
+require(limma)
+require(lumi)
+require(nlme)
+require(illuminaHumanv4.db)
+require(lumiHumanAll)
+require(lumiHumanIDMapping)
+require(genefilter)
+```
+
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+dataPath <- "/home/hbo010/lung_cancer/data"
+## Load the R-object:
+load("lung_cancer_outliers_removed_n=256_p=47285_04FEB2016.Rdata")
+## Get an overview of which objects is in the data file:
+ls()
+
+## Adjust the negCtrl object:
+dim(negCtrl)
+rownames(negCtrl) <- negCtrl$ProbeID ## make ProbeID rowname.
+negCtrl <- negCtrl[,-(1:2)] ## remove the first two columns.
+negCtrl <- t(negCtrl) ## Transpose to get the form nxp (individuals times probes).
+dim(negCtrl)
+```
+
+```{r Background adjustment}
+###############################
+# Perform background correction
+###############################
+## Combine data, status vector (stating for each row if it corresponds to gene or control)
+
+totalData <- t(cbind(exprs,negCtrl)) #770 neg control probes
+dim(totalData)
+status <- c(rep("regular", ncol(exprs)), rep("negative", ncol(negCtrl))) 
+table(status)
+## Background correct the probes using the limma nec function
+data.nec <- nec(totalData, status)  ## this gives same result as adding detection.p.
+
+## Remove the negative probes from the matrix:
+## exprs is not log2 transformed
+exprs.old <- exprs
+data.old <- data
+exprs <- t(data.nec)[,featureNames(data)] ## remove the values of the negative controls
+exprs(data) <- t(exprs) ##make sure exprs of data object is background corrected
+
+
+####
+# Look at the effect of background adjustment:
+####
+dataQ.old <- lumiQ(data.old)
+dataQ.badj <- lumiQ(data)
+
+ ## Plot all densities in one plot (irrespecitve of plate):
+par(mfrow=c(1,2))
+plot(dataQ.old, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main="Raw data")
+plot(dataQ.badj, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main= "Background adjusted data")
+```
+
+
+```{r Filter and translate to genes}
+######################
+## Filter probes and 
+## translate to genes
+######################
+
+## NOTE: Using v4 probe quality since HT-12 chip
+
+## We will filter and normalize the probes according to the recommandation given by NR (as of report 1. October 2014). 
+## This means that we will use detection p-value = 0.01, present limit = 0.01, and perform normalization on the NON(!!)-log2-transformed expression values.
+detection.pval <- 0.01
+present.limit <- 0.01
+
+
+presentLim <- round(present.limit*nrow(exprs)) ## Use presence in 1% of the individuals as cutoff, i.e. a probe must be present 
+                                      ## in more than 1% of the individuals in order to be used for further analysis.
+presentLim
+present <- detectionCall(data, Th=detection.pval, "probe") #Gives, for each gene, the number of women with a significantly present value for this gene. 
+probes <- nuID2IlluminaID(as.character(featureNames(data)), lib.mapping=NULL, species ="Human", idType='Probe') ## Translate NuID to Illumina ID.
+probe.quality <- unlist(mget(as.character(probes), illuminaHumanv4PROBEQUALITY, ifnotfound=NA))
+table(probe.quality, exclude=NULL) # check mapping and missing
+good.quality <- !((probe.quality == "Bad") | (probe.quality == "No match"))
+length(good.quality[good.quality==TRUE])
+keepProbes <- (present >= presentLim) & good.quality
+length(keepProbes [keepProbes ==TRUE])
+data <- data[keepProbes,]
+probes <- probes[keepProbes]
+
+#    annotation(data) <- "illuminaHumanv4"
+#    featureNames(data) <- probes #since data use nuID, this gives the illuminaID
+#    data <- nsFilter(data, var.filter=FALSE)$eset ## aggregate across annotated probes
+
+annotation(data) <- "lumiHumanAll"
+data <- nsFilter(data, var.filter=FALSE)$eset ## aggregate across annotated probes
+
+## Extract expression values:
+exprs <- t(exprs(data))
+
+
+############################
+### NORMALIZE DATA #########
+############################
+
+## Perform quantile normalization on the non-transformed data:
+normData <- lumiN(data,method="quantile")
+log2normData <- lumiT(normData,method="log2")
+log2normExprs <- t(exprs(log2normData))
+## Take difference between case and control:
+case_id <- which(background[,"Case_ctrl"]=="case")
+case_labnr <- as.character(background[case_id,"labnr"])
+ctrl_labnr <- as.character(background[case_id,"match_labnr"]) ## make sure that we get the mathching control.
+d.log2.normExprs <- log2normExprs[case_labnr,] - log2normExprs[ctrl_labnr,]
+
+
+####
+# Look at the effect of normalization:
+####
+dataQnorm <- lumiQ(log2normData)
+## Test: 
+dd <- data[featureNames(log2normData),]
+exprs(dd) <- data.nec[featureNames(log2normData),]
+dim(dd)
+ddQ <- lumiQ(dd)
+plot(ddQ,what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main="Raw data")
+
+ ## Plot all densities in one plot (irrespecitve of plate), :
+pdf("densities-before-and-after-badj-filtering-normalization.pdf")
+ par(mfrow=c(2,2))
+plot(dataQ.old, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main=paste("Raw data, probes=",dim(data.old)[1]))
+plot(dataQ.badj, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main=paste( "Background adjusted data, \n probes=",dim(data.old)[1]))
+plot(dataQnorm, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main= paste("Background adjusted and qNorm data \n Genes = ",dim(normData)[1]))
+plot(ddQ,what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main=paste("Background adj data \n Genes = ",dim(dd)[1]))
+dev.off()
+
+# ##############################################################################
+# ########### Added 09FEB 2016 ###############
+# ############################################
+# ## Calculate follow-up time in days (I have only considered years)
+# background$followUpDays <- (background$diagnosedato1 - background$BPROVEDATO)
+# all((background$followUpDays)/365.25== (background$followUpTime)
+# 
+# ## Make metasase as a "yes/no" categorical variable:
+# background$meta <- as.factor(ifelse(background$metastase1==0,"no","yes"))
+# table(background$meta)
+
+
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- file.path(dataPath, paste0("lung_cancer_GE_backgrAdj_qNorm_",dim(normExprs)[2],"ind_",dim(normExprs)[1],"genes_04FEB2016.Rdata"))
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(normData, background, labInfo, negCtrl, d.log2.normExprs, log2normExprs, file=files)  
+}
+
+ 
+```
+

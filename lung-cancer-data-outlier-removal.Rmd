@@ -1,0 +1,833 @@
+---
+title: "lung-cancer-outlier-removal"
+author: "Hege MB"
+date: "11 Jan 2016"
+output: html_document
+---
+
+Gene expression data from the lung cancer study was made available on Stallo January 11 2016. The data is updated from the Cancer Registry through Dec 31 2011.
+
+```{r import libraries}
+#############################################
+## import libaries
+#############################################
+require(lumi)
+require("arrayQualityMetrics")
+options(bitmapType="cairo")
+require(grid) #for plots with raster
+require(ggplot2)
+require("gridExtra")
+require(pandoc)
+options(bitmapType='cairo')
+```
+
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+## Load the R-object:
+load("/project/data1/tice/GCF-2015-373_LungGeneExpr/RData/GCF-2015-373_LungGeneExpr.RData")
+## Get an overview of which objects is in the data file:
+ls()
+## Investigate the lumi-object:
+lobj
+```
+
+```{r let data get the right format}
+## Set the rownames of negativeCtrls to the ProbeID:
+rownames(negativeCtrls) <- negativeCtrls$ProbeID
+
+# ## Extract only the LABNR to send to Morten (to obtain additional data):
+#
+# uniqueLABNR <- sampleNames(lobj)[grep("POOL",sampleNames(lobj),invert=T)]
+# ## Save to file:
+# write.csv(uniqueLABNR, file="labnr-of-lung-cancer-data.csv",quote=F,row.names=F,col.names=F)
+
+# Convert factors to character (R defaults to changing all txt to factors when reading csv files)
+i <- sapply(overview.data, is.factor) #identify factors
+overview.data[i] <- lapply(overview.data[i], as.character) #make character using factor levels
+i <- sapply(BloodCancer, is.factor) #identify factors
+BloodCancer[i] <- lapply(BloodCancer[i], as.character) #make character using factor levels
+
+## Investigate the data:
+table(overview.data$Plate)
+## Take a look at how the indiviuals with LABNR POOLX are distriubed, 
+## and save their information in separate objects:
+poolID <- grep("POOL",overview.data$Sample_ID)
+poolNegCtrl <- negativeCtrls[,grep("POOL",colnames(negativeCtrls))]
+poolLabInfo <- overview.data[poolID,]
+## Check that the gene expression data and the laboratory information/questionnaire information are sorted in the same order with respect to LABNR:
+all(overview.data$Sample_ID == sampleNames(lobj)) # If TRUE, the OK.
+all(overview.data$Sample_ID == BloodCancer$labnr) ## not true. 
+
+
+## Investigate the data by visual inspection:
+overview.data[c(1:5,poolID),]
+## Most of the "POOLX" individuals does not seem to have a value for "Plate". But they do have a value for "Chip". Lets look at it:
+table(overview.data$Chip) ## Chip value for all women.
+table(overview.data[poolID,"Chip"]) #Chip value for pool ID women.
+
+## For now, we remove the POOLX women, and continue to look at the other data:
+data <- lobj[,-poolID]
+labInfo <- overview.data[-poolID,]
+rownames(labInfo) <- labInfo$Sample_ID
+negCtrl <- negativeCtrls[,-grep("POOL",colnames(negativeCtrls))]
+dim(negCtrl)
+## Store the POOLX data in a separate lumi-object:
+poolData <- lobj[,poolID]
+## Visual inspection of the pool data: 
+farge <- rep(2:4,each=4)
+boxplot(log2(exprs(poolData)),col=farge)
+title("Two pools per chip, and four pools per plate \n log2 of raw data")
+## We observe some small batch effects. The pool data should be included in the background correction and normalization procedure.
+## Zoomed boxplot:
+boxplot(log2(exprs(poolData)),col=farge,ylim=c(5,8))
+title("Pools, zoomed")
+## Now check if the data in the BloodCancer object is sorted in the same order as the gene expression data: 
+all(labInfo$Sample_ID == BloodCancer$labnr) ## Still not true. 
+## Sort BloodCancer in the same order as the gene expression data:
+tt <- match(labInfo$Sample_ID,BloodCancer$labnr) ## get the order of labnr in Bloodcancer relative to "labInfo"
+# Does the "tt" look reasonable:
+head(tt)
+length(tt)
+any(is.na(tt))
+
+## Sort BloodCancer according to the order of "labInfo":
+ttt <- BloodCancer[tt,]
+ttt[1:10,1:10]
+## Check:
+all(labInfo$Sample_ID == ttt$labnr) # if true, then ok.
+## Check #2 (extract a random individual, and check that the data are similar): 
+BloodCancer[BloodCancer$labnr=="100515",]
+all(ttt[ttt$labnr=="100515",]== BloodCancer[BloodCancer$labnr=="100515",],na.rm=T)
+## Rename: 
+background <- ttt
+rownames(background) <- background$labnr
+
+## View data:
+table(background$Case_ctrl)
+case_labnr <- rownames(background)[background$Case_ctrl=="case"] ## only cases.
+ctrl_labnr <- as.character(background[case_labnr,"match_labnr"])
+
+table(background[case_labnr,"Case_ctrl"])  
+table(background[ctrl_labnr,"Case_ctrl"]) 
+
+## Dates must be set to the right format:
+datoer <- c(grep("dato",colnames(background)),grep("date",colnames(background)),grep("DATE",colnames(background)),grep("DATO",colnames(background)))
+lapply(background[,datoer],class) ## All are characters
+## Visual inspection:
+background[1:5,datoer] ## All have the format DDMMMYYYY
+## Change format, but save as a temporary variable first:
+bb <- background
+for(i in datoer){
+  bb[,i] <- as.Date(bb[,i], "%d%b%Y")
+}
+## Visually check that transformation is right by comparing the output:
+bb[1:5,datoer]
+background[1:5,datoer] 
+## ok.
+
+## Update the background data frame:
+background[,datoer] <- bb[,datoer]
+## Small check:
+lapply(background[,datoer],class)
+
+## Find time from blood sample to first diagnosis of lung cancer:
+## Subtract time from diagnosis to blood sample, divide by 365.25 and round up to nearest value:
+followUpTime <- (background$diagnosedato1 - background$BPROVEDATO)/365.25
+followUpY <- ceiling(followUpTime)
+table(followUpY)
+## Add variables to the "background" data frame:
+background$followUpY <- followUpY
+background$followUpTime <- followUpTime
+
+## Look at the diagnosis code:
+table(background[,"lok_icd71"]) ## just a check to see that controls do not have any diagnosis. 
+table(background[case_labnr,"lok_icd71"])
+
+## Look at the metastasis status:
+table(background[ctrl_labnr,"metastase1"])## just a check to see that controls do not have any metastasis. 
+table(background[case_labnr,"metastase1"])
+
+## Metastasis by follow-up year:
+by(background$metastase1,background$followUpY,table)
+
+## In labInfo, all decimal separators are with a comma instead of dot:
+head(labInfo)
+dd <- grep(",",labInfo[1,])
+lapply(labInfo[,dd],class) ## All are characters, but should be numeric.
+
+## one value is with brackets. Remove brackets:
+labInfo$RIN[178]
+labInfo$RIN[178] <- "6,8"
+labInfo$RIN[178]
+
+ll <- labInfo ## Make a temporary object.
+## Change comma to dot:
+ll[,dd] <- lapply(labInfo[,dd],function(x) as.numeric(gsub(patt=",", replace=".", x)))
+labInfo <- ll ## update labInfo.
+
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- paste0("lung_cancer_raw_data__n=",n,"_p=",p,"_15FEB2016.Rdata")
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(data, background, labInfo, negCtrl, poolData, file=files)  
+}
+
+
+
+
+```
+
+```{r blood genes}
+## For the preprocessing, I remove the blood genes: 
+## Remove probes related to blood sample: 
+## Import a list (from Arnar) with probes that are related to 
+## blood. 
+histo <- as.character(read.table("/home/hbo010/breastCancer/data/hla_hist.txt")$V1)
+histo
+##The values of the list is of from IlluminaID, so we need 
+## to convert them to nuID.
+histo_nuID <- IlluminaID2nuID(histo, lib.mapping=NULL, species = "Human")[,"nuID"] ## make logical vector of columns to keep:
+gExprs<-exprs(data) ## All gene expression
+histo_logic <- !rownames(gExprs) %in% histo_nuID
+## Check:
+sum(histo_logic) - nrow(gExprs)
+
+## extract submatrix:
+data.incl.blood <- data 	## lumi-object, temporary renamed.
+data <- data[histo_logic,] ## remember that data is of format p x n
+dim(data.incl.blood) - dim(data)
+```
+
+
+The data consists of `r dim(lobj)[2]` individuals and `r dim(lobj)[1]` probes, stored in the LumiBatch-object "lobj". We also have available the objects "negativeCtrls" of size `r dim(negativeCtrls)`, and the two objects "overview.data" (size `r dim(overview.data)`) and "samplesheet.data" (size `r dim(samplesheet.data)`) which both contain information from the laboratory. The "samplesheet.data" seems to contain the same information as "overview.data", and seems to be redundant. There is also a data frame named "BloodCancer" of size `r dim(BloodCancer)` containing information from the blood questionnaire as well as from the Cancer Registry.
+
+
+```{r Round 1 of outlier removal}
+##############
+### Initial QC.
+##############
+dataQ <- lumiQ(data)
+dataQ
+summary(dataQ, "QC")
+
+plotQc <- TRUE 
+
+## Better way to make output plots:
+if (plotQc == TRUE) {
+	## density plots
+  jpeg(filename=file.path(resultPath,"dens.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="density"); dev.off()
+	## sample relations based on MDS (multidimensional scaling)
+  jpeg(filename=file.path(resultPath,"sarel.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="sampleRelation"); dev.off()
+	## Boxplots
+  #jpeg(filename=file.path(resultPath,"box.jpeg"), width=2400, height=2400, units="px", quality=85)
+  #plot(dataQ, what="boxplot"); dev.off()
+	## detect outlier based on the distance to the mean profile
+  jpeg(filename=file.path(resultPath,"tree.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="outlier"); dev.off()
+}
+
+
+
+###################
+## PCA plots
+###################
+
+## Use the log2 of probe intensities:
+exprs<-t(exprs(data)) # Extract the gene expression values, and transpose to obtain format (n x p). This is needed for the prcomp() below.
+dim(exprs)
+log2.exprs <- log2(exprs)
+n <- nrow(exprs) ## number of individuals
+p <- ncol(exprs) ## number of probes
+
+## Run pca to investigate the first two principal components:
+pcaResult <- prcomp(log2.exprs)
+pcData <- data.frame(pcaResult$x)
+## look at how much the first few pc-components explain of the variation in the data:
+pcVar <- (pcaResult$sdev)^2 / sum(pcaResult$sdev^2) ## percent per component.
+## Look at screeplot:
+screeplot(pcaResult,type="l") ## Seems that the first two principal componetns are sufficient to consider.
+
+# set variables for printing
+y.max<- x.max <-  max(abs(c(max(pcData[1:2]), min(pcData[1:2]))))
+y.min <- x.min <- (- y.max)
+
+## PCA plot of the first two directions:
+#pdf(file.path(resultPath,paste("pca-plot-n=",n,"-lungCancer.pdf",sep="")))
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point()+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+#dev.off()
+
+## Possible outliers based on PCA plot:
+pca.out <- rownames(log2.exprs)[which(abs(pcData[1]) > 75)]
+pca.out ## Print LABNR of the outlier(s).
+
+## color pca.out in pca plot:
+possible_outlier <- as.factor(ifelse(rownames(log2.exprs) %in% c(pca.out),"outlier?","ok"))
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=possible_outlier))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+#
+
+###########################
+## Want to mark the indivdiual(s) above the red line in the tree.jpg.
+#	Need to look at plot and decide which ones to investigate - the subjective part of the process
+###########################
+## There are no obvious outliers in the tree.jpg plot for these data.
+
+############################
+## Density plots
+############################
+## Color the possible outliers with a different color in the density plots.
+# Now will make density plot with outliers from above colored red, one plot for each Plate
+  color.out.all <- ifelse(rownames(log2.exprs)%in%pca.out,2,1) 
+  names(color.out.all) <- rownames(log2.exprs)
+  table(color.out.all)
+  
+  uu <- by(rownames(labInfo), labInfo[,"Plate"], print)
+  #pdf(file.path(resultPath,paste("density-plot-per-plate-",nrow(labInfo),"pca-outliers-colored.pdf",sep="")), width=12)
+  #par(mfrow=c(3,3))
+  for (i in as.integer(names(uu))){
+    plot(density(log2.exprs[as.character(uu[[i]][1]),]), main = paste("Plate",i,"n=",length(uu[[i]])),ylim=c(0,4.5),lwd=.3) 
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=color.out.all[j],lwd=.3)
+    }
+    for(k in pca.out[pca.out %in% uu[[i]]]){ ## We want the colored lines to be printed in front, and to be bolder to make them visible.
+      lines(density(log2.exprs[k,]),col=color.out.all[k],lwd=1)
+    }
+  }
+  #dev.off()
+
+  ## Plot all densities in one plot (irrespecitve of plate), and color the pca.outlier to check if it is extreme overall:
+  pdf("density-plot-for-all-plates-with-pca-outlier-marked-in-red-zoomed.pdf",width=16)
+  plot(dataQ, what="density",col=1,lwd=.3,xlim=c(5.5,7))
+  lines(density(log2.exprs[pca.out,]),col="red",lwd=1)
+  dev.off()
+  ## Looking at the zoomed density plot, It seems that there is one more outlier?! Lets consider the AQM.
+  
+
+```
+
+```{r AQM outliers search}
+############
+####	Another way to look at outliers: AQM identification of outliers.
+############
+
+## make data an expressionset to be able to use package arrayQualityMetrics:
+eset <- as(data, "ExpressionSet")
+class(eset)
+preparedData = prepdata(expressionset=eset, intgroup=c(), do.logtransform=TRUE)
+
+# Create object of class aqmReportModule
+bo = aqm.boxplot(preparedData)
+maplott = aqm.maplot(preparedData, subsample=20000, Dthresh=0.15, maxNumArrays=8, nrColumns=4)
+heat = aqm.heatmap(preparedData)
+den = aqm.density(preparedData)
+
+# Find the outliers
+#	@outliers has 4 slots: statistic, threshold, which (names), description (type of test)
+  out.box <- rownames(log2.exprs)[bo@outliers@which]
+  out.box
+  out.ma <- rownames(log2.exprs)[maplott@outliers@which]
+  out.ma
+  out.heat <- rownames(log2.exprs)[heat@outliers@which]
+  out.heat
+  ## no info for density.
+
+  attributes(bo)
+  attributes(maplott)
+  attributes(heat)
+  attributes(den)
+  # Find any outliers which are common to all methods  (box=9, ma=39, heat=4)
+out.aa <- intersect(out.heat,out.ma);out.aa
+out.aqm <- intersect(out.aa,out.box);out.aqm
+out.aqm.all <- unique(c(out.heat,out.ma,out.box))
+
+#compare to list found above:
+sort(out.aqm)
+sort(out.aqm.all)
+sort(pca.out)
+
+
+
+# ############
+# ####	another way to look at outliers: detectOutlier from lumi
+# ############
+# temp <- detectOutlier(data, ifPlot=FALSE, Th=2) #ifPlot=TRUE makes a plot similar to above, so not needed
+# out.dendr <- names(which(temp)) #selects "outliers" based on the lumi definition (no idea)
+# sort(out.dendr)
+
+```
+
+```{r visually inspect possible outliers}
+#############################
+####	Summary of "outliers"
+####  ROUND 1
+#############################
+## Unique outlies found so far: 
+out.round1 <- unique(c(out.aqm,pca.out)); out.round1
+
+##################
+### PCA PLOT
+##################
+## Color in PCA plot:
+out_score <- rep(1,n)
+names(out_score) <- rownames(log2.exprs) ## Individuals not consideres outliers have a value of 1
+out_score[pca.out] <- out_score[pca.out]+1 ## outliers from pca have a value of 2
+out_score[out.aqm] <- out_score[out.aqm]+2 ## outliers from aqm have a value of 3, and outliers of both pca and aqm have a value of 4.
+table(out_score)
+## Make factor with understandable names:
+out_score <- factor(out_score,levels=1:4,labels=c("ok","PCA outlier","AQM outlier","PCA and AQM"))
+table(out_score)
+
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=out_score))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+
+#####################
+### DENSITY PLOT
+#####################
+## Color in density plot:
+ ## Plot all densities in one plot (irrespecitve of plate), and color the pca.outlier to check if it is extreme overall:
+  pdf("density-plot-for-all-plates-with-pca-and-aqm-outliers-zoomed.pdf",width=16)
+  plot(dataQ, what="density",col=1,lwd=.3,xlim=c(5.5,7))
+  for(i in out.round1){  
+    lines(density(log2.exprs[i,]),col="red",lwd=1)
+  }
+dev.off()
+
+############################
+## Median probe by outlier:
+############################
+  ## make median Gene plots for the identified individuals: 
+medianGene <- apply(log2.exprs,2,median)
+## Set max and min value for plot axis:
+minP <- min(log2.exprs)
+maxP <- max(log2.exprs)
+#pdf(file.path(resultPath,paste("median-geneplot-by-indiv-outliers-r1.pdf",sep="")), width=12)
+par(mfrow=c(2,2))
+for (i in out.round1){
+  plot(log2.exprs[rownames(log2.exprs) %in% i,], medianGene,cex=.3,xlab=paste("GE labnr",i,sep=" "),ylab="",xlim=c(minP,maxP),ylim=c(minP,maxP))
+  abline(0, 1) ## diagnoal line showing equality btw mean and individual values.
+}
+#dev.off()
+
+## For comparison, we will make median gene plots for 8 random individuals in the data:
+set.seed(10) ## Set seed (to be able to reproduce the plots later).
+ran_ind <- sample(x=rownames(log2.exprs),size = 8,replace = F) ## Select 8 individuals at random.
+par(mfrow=c(2,2))
+for (i in ran_ind){
+  plot(log2.exprs[rownames(log2.exprs) %in% i,], medianGene,cex=.3,xlab=paste("GE labnr",i,sep=" "),ylab="",xlim=c(minP,maxP),ylim=c(minP,maxP))
+  abline(0, 1) ## diagnoal line showing equality btw mean and individual values.
+}
+
+#############
+### LAB INFO
+#############
+###	Look at Laboratory measures for the individuals of concern
+## good quality:	RNA between 50 and 500, RIN>7, 260/280>2, 260/230>1.7 
+labInfo[rownames(labInfo) %in% out.round1, c("ng/µl_RNA","RIN","260/280_RNA","260/230_RNA","260/280_cRNA","260/230_cRNA")]
+## "140892" has a value below our given threshold for 260/230_RNA.
+
+###	Look at how long in the mail for individuals of concern
+days_between <- background[background$labnr %in% out.round1,"freezing_date"]-background[background$labnr %in% out.round1,"BPROVEDATO"]
+days_between
+## OK.
+
+
+## PCA plots colored with the different outliers found by different procedures. For comparison:
+p1<-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.aqm.all))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p2 <-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% pca.out))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max)  + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p3 <-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.dendr))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p4 <- ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.round1))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+grid.arrange(p1,p2,p3,p4,ncol=2) #this works, just couldn't make it go to a file
+
+```
+
+
+
+
+```{r Check for overall problems (batch effects)}
+## Color PCA plot according to batch variables:
+## PLATE:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Plate)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+## Case-ctrl status:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(background$Case_ctrl)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## Date RNA isolation:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Date_RNA_Isolation)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## Chip:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Chip)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## RIN:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.numeric(labInfo$RIN)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## Metastase
+coll <- ifelse(background$metastase1==0,0,1)
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(coll)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+######################
+## DENSITY PLOTS BY PLATE
+######################
+## Will make three density plots where each plate is the last to be printed in at least one plot. This makes is useful to see that a plate is not very different for the others: 
+  uu <- by(rownames(labInfo), labInfo[,"Plate"], print)
+  #pdf(file.path(resultPath,paste("density-plot-per-plate-",nrow(labInfo),"pca-outliers-colored.pdf",sep="")), width=12)
+  par(mfrow=c(2,2))
+  plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(1,2,3)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(1,3,2)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(2,3,1)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+```
+
+```{r Remove outliers}
+###	The subjective part here is to decide which, if any, outliers to remove
+my.out <- out.round1; my.out
+
+# Datasets: exprs, labInfo, negCtrl, background, data
+
+# getting matches to individuals to remove, so remove the pair
+out <- c(my.out, background[background$labnr %in% my.out,"match_labnr"])
+
+## pick out subset of individuals
+background<-background[! background$labnr %in% out,]
+labInfo<-labInfo[(! labInfo$Sample_ID %in% out),]
+negCtrl<-negCtrl[,(! colnames(negCtrl) %in% out)]
+data.raw <- data
+data<-data[,(! colnames(data) %in% out)] # p x n
+controlData(data) <- negCtrl
+exprs<-t(exprs(data)) # Extract the gene expression values, and transpose to obtain format (n x p). This is needed for the prcomp() below.
+
+
+```
+
+```{r Save data}
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- "lung_cancer_after_first_round_outlier_removal.Rdata"
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(data, exprs, background, labInfo, negCtrl,out, file=files)  
+}
+
+
+```
+
+
+
+```{r Round two of outlier removal}
+  
+##############
+### Initial QC
+##############
+dataQ <- lumiQ(data)
+dataQ
+summary(dataQ, "QC")
+
+plotQc <- TRUE 
+
+## Better way to make output plots:
+if (plotQc == TRUE) {
+	## density plots
+  jpeg(filename=file.path(resultPath,"dens2.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="density"); dev.off()
+	## sample relations based on MDS (multidimensional scaling)
+  jpeg(filename=file.path(resultPath,"sarel2.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="sampleRelation"); dev.off()
+	## Boxplots
+  #jpeg(filename=file.path(resultPath,"box.jpeg"), width=2400, height=2400, units="px", quality=85)
+  #plot(dataQ, what="boxplot"); dev.off()
+	## detect outlier based on the distance to the mean profile
+  jpeg(filename=file.path(resultPath,"tree2.jpeg"), width=2400, height=2400, units="px", quality=85)
+  plot(dataQ, what="outlier"); dev.off()
+}
+
+############
+####	another way to look at outliers: detectOutlier from lumi
+############
+temp <- detectOutlier(data, ifPlot=FALSE, Th=2) #ifPlot=TRUE makes a plot similar to above, so not needed
+out.dendr <- names(which(temp)) #selects "outliers" based on the lumi definition (no idea)
+sort(out.dendr)
+
+
+
+###################
+## PCA plots
+###################
+
+## Use the log2 of probe intensities:
+dim(log2.exprs)
+
+## Run pca to investigate the first two principal components:
+pcaResult <- prcomp(log2.exprs)
+pcData <- data.frame(pcaResult$x)
+## look at how much the first few pc-components explain of the variation in the data:
+pcVar <- (pcaResult$sdev)^2 / sum(pcaResult$sdev^2) ## percent per component.
+## Look at screeplot:
+screeplot(pcaResult,type="l") ## Seems that the first two principal componetns are sufficient to consider.
+
+# set variables for printing
+y.max<- x.max <-  max(abs(c(max(pcData[1:2]), min(pcData[1:2]))))
+y.min <- x.min <- (- y.max)
+
+## PCA plot of the first two directions:
+#pdf(file.path(resultPath,paste("pca-plot-n=",n,"-lungCancer.pdf",sep="")))
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point()+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+#dev.off()
+
+## In this round, I am not sure if I want to call any of the individuals as outliers based on the PCA plot.
+## But let's just investigate the ones that have large values on PC1: 
+## Possible outliers based on PCA plot:
+pca.out <- rownames(log2.exprs)[which(abs(pcData[1]) > 55)]
+pca.out ## Print LABNR of the outlier(s).
+
+## color pca.out in pca plot:
+possible_outlier <- as.factor(ifelse(rownames(log2.exprs) %in% c(pca.out),"outlier?","ok"))
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=possible_outlier))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+
+## Visual output from dendrogram:
+out.dendro <- c("106896" ,"103128" ,"128618" ,"135071" ,"146539")
+ind.out.dendro <- as.factor(ifelse(rownames(log2.exprs)%in% out.dendro,1,2))
+table(ind.out.dendro)
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(col=ind.out.dendro)+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+```
+
+```{r AQM outliers search round 2}
+############
+####	Another way to look at outliers: AQM identification of outliers.
+############
+
+## make data an expressionset to be able to use package arrayQualityMetrics:
+eset <- as(data, "ExpressionSet")
+class(eset)
+preparedData = prepdata(expressionset=eset, intgroup=c(), do.logtransform=TRUE)
+
+# Create object of class aqmReportModule
+bo = aqm.boxplot(preparedData)
+maplott = aqm.maplot(preparedData, subsample=20000, Dthresh=0.15, maxNumArrays=8, nrColumns=4)
+heat = aqm.heatmap(preparedData)
+den = aqm.density(preparedData)
+
+# Find the outliers
+#	@outliers has 4 slots: statistic, threshold, which (names), description (type of test)
+  out.box <- rownames(log2.exprs)[bo@outliers@which]
+  out.box
+  out.ma <- rownames(log2.exprs)[maplott@outliers@which]
+  out.ma
+  out.heat <- rownames(log2.exprs)[heat@outliers@which]
+  out.heat
+  ## no info for density.
+
+  attributes(bo)
+  attributes(maplott)
+  attributes(heat)
+  attributes(den)
+  # Find any outliers which are common to all methods  (box=9, ma=39, heat=4)
+out.aa <- intersect(out.heat,out.ma);out.aa
+out.aqm <- intersect(out.aa,out.box);out.aqm
+out.aqm.all <- unique(c(out.heat,out.ma,out.box))
+
+#compare to list found above:
+sort(out.aqm)
+sort(out.aqm.all)
+sort(pca.out)
+
+
+
+
+```
+
+```{r visually inspect possible outliers Round 2}
+#############################
+####	Summary of "outliers"
+####  ROUND 2
+#############################
+## Unique outlies found so far: 
+out.round2 <- unique(c(out.aqm,pca.out,out.dendro)); out.round2
+
+##################
+### PCA PLOT
+##################
+## Color in PCA plot:
+## PCA PLOT:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.round2))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## PCA plot for outliers in dendro:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.dendro))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+
+
+## PCA PLOT for all aqm:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.aqm.all))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+
+#####################
+### DENSITY PLOT
+#####################
+
+## Color in density plot:
+ ## Plot all densities in one plot (irrespecitve of plate), and color to check if it is extreme overall:
+  pdf("density-plot-for-all-plates-with-pca-and-aqm-outliers-zoomed-round2.pdf",width=16)
+  plot(dataQ, what="density",col=1,lwd=.3,xlim=c(5.5,7))
+  for(i in out.round1){  
+    lines(density(log2.exprs[i,]),col="red",lwd=1)
+  }
+dev.off()
+
+## Color in density plot for out.dendro
+ ## Plot all densities in one plot (irrespecitve of plate), and color to check if it is extreme overall:
+  pdf("density-plot-for-all-plates-with-dendro-outliers-zoomed-round2.pdf",width=16)
+  plot(dataQ, what="density",col=1,lwd=.3,xlim=c(5.5,7))
+  for(i in out.dendro){  
+    lines(density(log2.exprs[i,]),col="red",lwd=1)
+  }
+dev.off()
+
+## Color in density plot for out.aqm.all:
+ ## Plot all densities in one plot (irrespecitve of plate), and color to check if it is extreme overall:
+  pdf("density-plot-for-all-plates-with-aqm-all-outliers-zoomed-round2.pdf",width=16)
+  plot(dataQ, what="density",col=1,lwd=.3,xlim=c(5.5,7))
+  for(i in out.aqm.all){  
+    lines(density(log2.exprs[i,]),col="red",lwd=1)
+  }
+dev.off()
+
+############################
+## Median probe by outlier:
+############################
+  ## make median Gene plots for the identified individuals: 
+medianGene <- apply(log2.exprs,2,median)
+## Set max and min value for plot axis:
+minP <- min(log2.exprs)
+maxP <- max(log2.exprs)
+#pdf(file.path(resultPath,paste("median-geneplot-by-indiv-outliers-round2.pdf",sep="")), width=12)
+par(mfrow=c(2,2))
+for (i in out.round1){
+  plot(log2.exprs[rownames(log2.exprs) %in% i,], medianGene,cex=.3,xlab=paste("GE labnr",i,sep=" "),ylab="",xlim=c(minP,maxP),ylim=c(minP,maxP))
+  abline(0, 1) ## diagnoal line showing equality btw mean and individual values.
+}
+#dev.off()
+
+#############
+### LAB INFO
+#############
+###	Look at Laboratory measures for the individuals of concern
+## good quality:	RNA between 50 and 500, RIN>7, 260/280>2, 260/230>1.7 
+labInfo[rownames(labInfo) %in% out.round2, c("ng/µl_RNA","RIN","260/280_RNA","260/230_RNA","260/280_cRNA","260/230_cRNA")]
+## Some individuals have values below our "good quality" limits.
+
+###	Look at how long in the mail for individuals of concern
+days_between <- background[background$labnr %in% out.round2,"freezing_date"]-background[background$labnr %in% out.round2,"BPROVEDATO"]
+days_between
+## OK.
+
+## PCA plots colored with the different outliers found by different procedures. For comparison:
+p1<-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.aqm.all))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p2 <-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% pca.out))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max)  + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p3 <-  ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.dendro))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+p4 <- ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=rownames(log2.exprs)%in% out.round2))+ ggtitle(paste("PCA plot of",n,"individuals")) + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+grid.arrange(p1,p2,p3,p4,ncol=2) #this works, just couldn't make it go to a file
+
+```
+
+```{r Check for overall problems (batch effects) Round 2}
+## Color PCA plot according to batch variables:
+## PLATE:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Plate)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+## Case-ctrl status:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(background$Case_ctrl)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## Date RNA isolation:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Date_RNA_Isolation)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## Chip:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.factor(labInfo$Chip)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+## RIN:
+ggplot(pcData,aes(x=PC1,y=PC2)) + geom_point(aes(color=as.numeric(labInfo$RIN)))+ ggtitle(paste("PCA plot of",n,"individuals"))  + xlim(x.min,x.max) + ylim(y.min,y.max) + xlab(paste("PC1 (",round(pcVar[1]*100)," %)")) + ylab(paste("PC2 (",round(pcVar[2]*100)," %)"))
+
+######################
+## DENSITY PLOTS BY PLATE
+######################
+## Will make three density plots where each plate is the last to be printed in at least one plot. This makes is useful to see that a plate is not very different for the others: 
+  uu <- by(rownames(labInfo), labInfo[,"Plate"], print)
+  #pdf(file.path(resultPath,paste("density-plot-per-plate-",nrow(labInfo),"pca-outliers-colored.pdf",sep="")), width=12)
+  par(mfrow=c(2,2))
+  plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(1,2,3)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(1,3,2)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+plot(density(log2.exprs[as.character(uu[[1]][1]),]),ylim=c(0,4.5),lwd=.3) 
+  for (i in c(2,3,1)){
+    for (j in as.character(uu[[i]])){
+      lines(density(log2.exprs[j,]),col=i,lwd=.3)
+    }
+  }
+
+```
+
+```{r Remove outliers Round 2}
+  ## We choose to not remove any outliers in Round 2. 
+  
+
+```
+
+```{r Save data}
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- paste0("lung_cancer_outliers_removed_n=",n,"_p=",p,"_04FEB2016.Rdata")
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(data, exprs, background, labInfo, negCtrl, file=files)  
+}
+
+
+```
+
