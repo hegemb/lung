@@ -1,0 +1,94 @@
+---
+title: "data-for-imperial"
+author: "Hege MB"
+date: "18 Feb 2016"
+output: pdf_document
+---
+
+Want to create a data set that will be shared with Imperial College. For this data, only the gene expression values will be shared, along with laboratory information and case-control status/matching id. They will also have the histology-code. 
+
+```{r import libraries}
+#############################################
+## import libaries
+#############################################
+require(lumi)
+require(nlme)
+#install.packages("gplots")
+require(gplots)
+
+```
+
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+dataPath <- "/home/hbo010/lung_cancer/data"
+## Load the R-object:
+load("/home/hbo010/lung_cancer/data/lung_cancer_GE_backgrAdj_qNorm_256ind_11610genes_04FEB2016.Rdata")
+## Get an overview of which objects is in the data file:
+ls()
+
+## Import histology-information from Morten: 
+histology <- read.csv(file="/home/hbo010/lung_cancer/data/histology_information_lung_cancer.csv",sep=",")
+```
+
+We will add information on case-control status, match-labnr and histology-code to the pData. 
+```{r Add info to pData}
+## Check that the gene expression data is sorted in the same order as background data: 
+all(sampleNames(log2normData) == rownames(background))
+
+## Check what information is available in pData:
+head(pData(log2normData)) # only sampleID.
+
+## Add match_labnr and case-control status:
+pData(log2normData)$match_labnr <- background$match_labnr
+pData(log2normData)$case_ctrl <- background$Case_ctrl
+head(pData(log2normData))
+
+## Small check that info is the same: 
+all(pData(log2normData)[,c("sampleID","match_labnr","case_ctrl")] == background[,c("labnr","match_labnr","Case_ctrl")]) ## should be TRUE.
+
+## Add the information on histology code, by first merging it with the background data:
+rownames(histology) <- histology$labnr
+## merge data by labnr:
+tt <- merge(x=background,y=histology,by="labnr",sort=F)
+## Small check - both should be TRUE:
+dim(tt)
+dim(background)
+## check that tt is sorted in the same order as background and GE data:
+all(tt$labnr == sampleNames(log2normData))#should be true
+all(tt$labnr == background$labnr)#should be true
+
+## Add morphology data:
+pData(log2normData)$morphology <- tt$morphology
+pData(log2normData)[1:10,]
+
+## rename pData$sampleID to labnr
+names(pData(log2normData))[1] <- "labnr"
+pData(log2normData)[1:5,]
+
+## Visually look at data:
+pData(log2normData)[pData(log2normData)$case_ctrl=="case","morphology"]
+pData(log2normData)[pData(log2normData)$case_ctrl=="ctrl","morphology"]
+
+## Final check: 
+all(background$labnr == pData(log2normData)$labnr)#should be true
+all(sampleNames(log2normData) == pData(log2normData)$labnr)#should be true
+```
+
+```{r Save data to file}
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- file.path("/project/data1/tice/LungNowacMethylation/Smoking", paste0("nowac_lung_cancer_GE_for_ImperialCollege_n=256_p=11610_18FEB2016.Rdata"))
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(labInfo,log2normData, file=files)  
+}
+```
+
