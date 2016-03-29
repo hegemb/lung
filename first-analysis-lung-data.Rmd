@@ -1,0 +1,328 @@
+---
+title: "first-analysis-lung-data"
+author: "Hege MB"
+date: "4 Feb 2016"
+output: html_document
+---
+
+```{r import libraries}
+#############################################
+## import libaries
+#############################################
+require(multtest)
+require(limma)
+require(lumi)
+require(nlme)
+require(illuminaHumanv4.db)
+require(lumiHumanAll)
+require(lumiHumanIDMapping)
+require(genefilter)
+#install.packages("glmnet")
+require(glmnet)
+install.packages("gplots")
+require(gplots)
+
+```
+
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+dataPath <- "/home/hbo010/lung_cancer/data"
+## Load the R-object:
+load("/home/hbo010/lung_cancer/data/lung_cancer_GE_backgrAdj_qNorm_256ind_11610genes_04FEB2016.Rdata")
+## Get an overview of which objects is in the data file:
+ls()
+```
+
+```{r limma analysis}
+## Table metastasis by follow-up year:
+table(background$followUpY)
+by(background$metastase1,background$followUpY,table)
+
+## Make function to calculate adjusted p-value:
+limmaFunc <- function(yy,dd=d.log2.normExprs,bb=background,metastase){
+ ## Extract the case-control pairs:
+   labnrSub <- na.omit(rownames(bb)[which(bb$followUpY <= yy)])
+   #print(labnrSub)
+   #print(table(bb[labnrSub,"Case_ctrl"]))
+   if(metastase==0){
+     uu <- rownames(bb)[which(bb$metastase1 == 0)]
+     ll <- intersect(labnrSub,uu)
+     print(paste("Subset size no metastasis:",length(ll)))
+     labnrSub <- ll} 
+   if(metastase==1){
+      uu <- rownames(bb)[which(bb$metastase1 != 0)]
+     ll <- intersect(labnrSub,uu)
+     print(paste("Subset size metastasis:",length(ll)))
+     labnrSub <- ll
+   }
+   
+data.sub <- t(dd[labnrSub,])
+print(paste("Dimension of data:",dim(data.sub)))
+
+## run limma analysis:
+limFit <- lmFit(data.sub)
+ebayesFit <- eBayes(limFit)
+resLimma <- topTable(ebayesFit,n=nrow(data.sub))
+pp <- sum(resLimma$adj.P.Val < .1)
+ppp <- sum(resLimma$adj.P.Val < .2)
+print(paste("Number of adjusted p-values less than 0.1:",pp))
+print(paste("Number of adjusted p-values less than 0.2:",ppp))
+
+write.table(t(c(yy,dim(data.sub)[2],metastase,pp,ppp)),file="output-genes-with-adj-pvalue-less-than-10-and-20pst.txt",append=T,col.names=F,row.names=F,sep = "\t")
+
+## T-test:
+tt <- apply(data.sub,1,t.test) ## Test all genes.
+p <- sapply(tt,function(x)x$p.value) ## extract p-values
+adj.p <- p.adjust(p,method="BH") ## adjusted p-values
+print(length(adj.p))
+print(paste("t-test less than 0.1:", sum(adj.p < .1),"t-test less than 0.2:",sum(adj.p < .2)))
+
+return(resLimma)
+}
+
+## Run limma on both metastasis and no metastasis mixed:
+limma.all <- limmaFunc(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 3)
+limma.1y <- limmaFunc(yy = 1,metastase = 3)
+limma.2y <- limmaFunc(yy = 2,metastase = 3)
+limma.3y <- limmaFunc(yy = 3,metastase = 3)
+limma.4y <- limmaFunc(yy = 4,metastase = 3)
+limma.5y <- limmaFunc(yy = 5,metastase = 3)
+limma.6y <- limmaFunc(yy = 6,metastase = 3)
+limma.7y <- limmaFunc(yy = 7,metastase = 3)
+limma.8y <- limmaFunc(yy = 8,metastase = 3)
+
+pdf("hist-pval-all-1y-5y.pdf")
+par(mfrow=c(2,3))
+hist(limma.all$P.Value,ylim=c(0,1800),main=paste("Adj. P-values for \n 128 cc-pairs"))
+hist(limma.1y$P.Value,ylim=c(0,1800), main= paste("Adj. P-values for", length(labid.oneY),"cc \n 1 year prior"))
+hist(limma.2y$P.Value,ylim=c(0,1800), main= paste("Adj. P-values for", length(labid.twoY),"cc \n 2 years prior"))
+hist(limma.3y$P.Value,ylim=c(0,1800), main= paste("Adj. P-values for", length(labid.threeY),"cc \n 3 years prior"))
+hist(limma.4y$P.Value,ylim=c(0,1800), main= paste("Adj. P-values for", length(labid.fourY),"cc \n 4 years prior"))
+hist(limma.5y$P.Value,ylim=c(0,1800), main= paste("Adj. P-values for", length(labid.fiveY),"cc \n 5 years prior"))
+dev.off()
+```
+Based on the results above, I choose to look at up to 2 years prior and up to 3 years prior to diagnosis, to get enough individuals. 
+
+```{r split according to metastasis}
+## Limma for all women regardless of time to diagnosis:
+limma.all.m0 <- limmaFunc(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 0)
+limma.all.m1 <- limmaFunc(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 1)
+
+limma.1y.m0 <- limmaFunc(yy = 1,metastase = 0)
+limma.1y.m1 <- limmaFunc(yy = 1,metastase = 1)
+
+limma.2y.m0 <- limmaFunc(yy = 2,metastase = 0)
+limma.2y.m1 <- limmaFunc(yy = 2,metastase = 1)
+
+limma.3y.m0 <- limmaFunc(yy = 3,metastase = 0)
+limma.3y.m1 <- limmaFunc(yy = 3,metastase = 1)
+
+limma.4y.m0 <- limmaFunc(yy = 4,metastase = 0)
+limma.4y.m1 <- limmaFunc(yy = 4,metastase = 1)
+
+limma.5y.m0 <- limmaFunc(yy = 5,metastase = 0)
+limma.5y.m1 <- limmaFunc(yy = 5,metastase = 1)
+
+limma.6y.m0 <- limmaFunc(yy = 6,metastase = 0)
+limma.6y.m1 <- limmaFunc(yy = 6,metastase = 1)
+
+limma.7y.m0 <- limmaFunc(yy = 7,metastase = 0)
+limma.7y.m1 <- limmaFunc(yy = 7,metastase = 1)
+
+limma.8y.m0 <- limmaFunc(yy = 8,metastase = 0)
+limma.8y.m1 <- limmaFunc(yy = 8,metastase = 1)
+
+```
+
+```{r save gene names into a file}
+## Select genes that have an adjusted p-value less than 0.2
+gg <- list() ## new list
+gg$geneNames.1y.m1 <- rownames(limma.1y.m1)[which(limma.1y.m1$adj.P.Val < 0.2)]
+gg$geneNames.2y.m1 <- rownames(limma.2y.m1)[which(limma.2y.m1$adj.P.Val < 0.2)]
+gg$geneNames.3y.m1 <- rownames(limma.3y.m1)[which(limma.3y.m1$adj.P.Val < 0.2)]
+gg$geneNames.4y.m1 <- rownames(limma.4y.m1)[which(limma.4y.m1$adj.P.Val < 0.2)]
+gg$geneNames.5y.m1 <- rownames(limma.5y.m1)[which(limma.5y.m1$adj.P.Val < 0.2)]
+gg$geneNames.6y.m1 <- rownames(limma.6y.m1)[which(limma.6y.m1$adj.P.Val < 0.2)]
+gg$geneNames.7y.m1 <- rownames(limma.7y.m1)[which(limma.7y.m1$adj.P.Val < 0.2)]
+gg$geneNames.8y.m1 <- rownames(limma.8y.m1)[which(limma.8y.m1$adj.P.Val < 0.2)]
+
+
+geneSymbol1 <- nuID2IlluminaID(geneNames.1y.m1)[,"Symbol"]
+geneSymbol2 <- nuID2IlluminaID(geneNames.2y.m1)[,"Symbol"]
+geneSymbol3 <- nuID2IlluminaID(geneNames.3y.m1)[,"Symbol"]
+
+write.table(x = geneSymbol1, file = paste0("geneSymbols-y1-m1-p=",length(gg1),"-FDR-less-than-20pst.txt"),col.names = F,row.names = F,quote =F)
+write.table(x = geneSymbol2, file = paste0("geneSymbols-y2-m1-p=",length(gg2),"-FDR-less-than-20pst.txt"),col.names = F,row.names = F,quote =F)
+write.table(x = geneSymbol3, file = paste0("geneSymbols-y3-m1-p=",length(gg3),"-FDR-less-than-20pst.txt"),col.names = F,row.names = F,quote =F)
+
+## Eiliv wants only 100 genes, plus p-value and direction of fold change:
+mm <- 100
+gg1 <- cbind(geneSymbol1[1:mm], limma.1y.m1[1:mm,c("AveExpr","adj.P.Val","P.Value")])
+gg2 <- cbind(geneSymbol2[1:mm], limma.2y.m1[1:mm,c("AveExpr","adj.P.Val","P.Value")])
+gg3 <- cbind(geneSymbol3[1:mm], limma.3y.m1[1:mm,c("AveExpr","adj.P.Val","P.Value")])
+colnames(gg1)[1] <- colnames(gg2)[1] <- colnames(gg3)[1] <- "Gene_symbol"
+write.table(x = gg1, file = paste0("geneSymbols-y1-m1-FDR-less-than-20pst-100.txt"),col.names = T,row.names = F,quote =F,sep="\t")
+write.table(x = gg2, file = paste0("geneSymbols-y2-m1-FDR-less-than-20pst-100.txt"),col.names = T,row.names = F,quote =F,sep="\t")
+write.table(x = gg3, file = paste0("geneSymbols-y3-m1-FDR-less-than-20pst-100.txt"),col.names = T,row.names = F,quote =F,sep="\t")
+
+
+
+
+```
+
+
+
+```{r}
+## how many genes are the same for year 1 and 2:
+venn(gg[1:3])
+venn(gg[6:7])
+venn(gg[6:8])
+
+
+venn(gg[6:8])
+## the two genes in y8 are included in y6 and y7.
+## All but 1 gene in y7 is included in y6.
+
+venn(gg[c(1,7)])
+venn(gg[c(2,7)])
+venn(gg[c(2:3,7)])
+
+
+pdf(file.path(resultPath,"Venn-diagram-years1-3-m1-limma-genes-with-FDR-less-than-20pst.pdf"))
+draw.triple.venn(pp1,pp2,pp3, n12 = cc12, n23 = cc23, n13 = cc13,n123 = cc123, category = c(paste0("1 year (",pp1,")"),paste0("2 years (",pp2,")"), paste0("3 years (",pp3,")")),fill=c(2:4))
+dev.off()
+
+## size of difference btw cases and ctrls:
+## Extract subset:
+labnr.1y.m1 <- rownames(background)[intersect(which(background$followUpY==1), which(background$metastase1 >=1))]
+labnr.2y.m1 <- rownames(background)[intersect(which(background$followUpY<=2), which(background$metastase1 >=1))]
+
+pdf("boxplot-1y-2y-m1-100-first.pdf")
+boxplot(d.log2.normExprs[labnr.1y.m1,geneNames.1y.m1[1:100]],main="1y prior with meta,100 top ranked genes\n 12 cc-pairs")
+abline(h=0,col="red")
+boxplot(d.log2.normExprs[labnr.2y.m1,geneNames.2y.m1[1:100]],main="2y prior with meta,100 top ranked genes\n 26 cc-pairs")
+abline(h=0,col="red")
+dev.off()
+
+## Save gene names to file:
+gg <- nuID2IlluminaID(geneNames.1y.m1)
+geneSymbol.1y.m1 <- gg[,"Symbol"]
+write.table(x = geneSymbol.1y.m1, file = "geneSymbols-y1-m1-p=465-FDR-less-than-20pst.txt",col.names = F,row.names = F,quote =F)
+```
+
+```{r limma as above, but not cummulate years}
+## We want to do the same as above, but for each year separately (not cummulate pairs over years). 
+## Modify the limmaFunc-function above:
+## Make function to calculate adjusted p-value:
+limmaFunc2 <- function(yy,dd=d.log2.normExprs,bb=background,metastase){
+ ## Extract the case-control pairs:
+  if(yy == max(bb$followUpY,na.rm=T)){
+    labnrSub <- rownames(dd) ## All cc-pairs
+    print("All cc-pairs")
+  } else {
+    labnrSub <- na.omit(rownames(bb)[which(bb$followUpY == yy)])
+    }
+   print(labnrSub)
+   print(table(bb[labnrSub,"Case_ctrl"]))
+   if(metastase==0){
+     uu <- rownames(bb)[which(bb$metastase1 == 0)]
+     ll <- intersect(labnrSub,uu)
+     print(paste("Subset size no metastasis:",length(ll)))
+     labnrSub <- ll} 
+   if(metastase==1){
+      uu <- rownames(bb)[which(bb$metastase1 != 0)]
+     ll <- intersect(labnrSub,uu)
+     print(paste("Subset size metastasis:",length(ll)))
+     labnrSub <- ll
+   }
+   
+data.sub <- t(dd[labnrSub,])
+print(paste("Dimension of data:",dim(data.sub)))
+
+## run limma analysis:
+limFit <- lmFit(data.sub)
+ebayesFit <- eBayes(limFit)
+resLimma <- topTable(ebayesFit,n=nrow(data.sub))
+pp <- sum(resLimma$adj.P.Val < .1)
+ppp <- sum(resLimma$adj.P.Val < .2)
+print(paste("Number of adjusted p-values less than 0.1:",pp))
+print(paste("Number of adjusted p-values less than 0.2:",ppp))
+write.table(t(c(yy,dim(data.sub)[2],metastase,pp,ppp)),file="output-genes-with-adj-pvalue-less-than-10-and-20pst-PER-YEAR.txt",append=T,col.names=F,row.names=F,sep = "\t")
+
+## T-test:
+tt <- apply(data.sub,1,t.test) ## Test all genes.
+p <- sapply(tt,function(x)x$p.value) ## extract p-values
+adj.p <- p.adjust(p,method="BH") ## adjusted p-values
+print(length(adj.p))
+print(paste("t-test less than 0.1:", sum(adj.p < .1),"t-test less than 0.2:",sum(adj.p < .2)))
+
+
+return(resLimma)
+}
+
+## Run limma on both metastasis and no metastasis mixed:
+limma.all.2 <- limmaFunc2(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 3)
+limma.1y.2 <- limmaFunc2(yy = 1,metastase = 3)
+limma.2y.2 <- limmaFunc2(yy = 2,metastase = 3)
+limma.3y.2 <- limmaFunc2(yy = 3,metastase = 3)
+limma.4y.2 <- limmaFunc2(yy = 4,metastase = 3)
+limma.5y.2 <- limmaFunc2(yy = 5,metastase = 3)
+limma.6y.2 <- limmaFunc2(yy = 6,metastase = 3)
+limma.7y.2 <- limmaFunc2(yy = 7,metastase = 3)
+
+
+## Limma for all women regardless of time to diagnosis:
+limma.all.m0.2 <- limmaFunc2(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 0)
+limma.all.m1.2 <- limmaFunc2(yy = as.numeric(max(background$followUpY,na.rm=T)),metastase = 1)
+
+limma.1y.m0.2 <- limmaFunc2(yy = 1,metastase = 0)
+limma.1y.m1.2 <- limmaFunc2(yy = 1,metastase = 1)
+
+limma.2y.m0.2 <- limmaFunc2(yy = 2,metastase = 0)
+limma.2y.m1.2 <- limmaFunc2(yy = 2,metastase = 1)
+
+limma.3y.m0.2 <- limmaFunc2(yy = 3,metastase = 0)
+limma.3y.m1.2 <- limmaFunc2(yy = 3,metastase = 1)
+
+limma.4y.m0.2 <- limmaFunc2(yy = 4,metastase = 0)
+limma.4y.m1.2 <- limmaFunc2(yy = 4,metastase = 1)
+
+limma.5y.m0.2 <- limmaFunc2(yy = 5,metastase = 0)
+limma.5y.m1 <- limmaFunc2(yy = 5,metastase = 1)
+
+limma.6y.m0.2 <- limmaFunc2(yy = 6,metastase = 0)
+limma.6y.m1.2 <- limmaFunc2(yy = 6,metastase = 1)
+
+limma.7y.m0.2 <- limmaFunc2(yy = 7,metastase = 0)
+limma.7y.m1.2 <- limmaFunc2(yy = 7,metastase = 1)
+
+
+
+
+```
+
+
+We want to use a subset of the cc-pairs to build a prediction model based on Cox regression, and test on another smaller subset. More detailed, lets use all pairs with a follow-up time less than 2.5 years (32 pairs with time up to 2.52 years). We will then use 22 random pairs to train the model, using leave one out. After assessing the optimal number of genes in the model based on the leave-one-out, we use all 22 to estimate the regression coefficients. We further calculate the prognostix index for the remaining 10 pairs and find the AUC for sensistivity and specificity. 
+```{r prediction model}
+## Where to set the cut-off? 
+sort(background$followUpTime[background$metastase1>=1])
+
+## Extract subset of metastase > 0 and follow-up time <= 2.6 years:
+pred.subset <- rownames(background)[intersect(which(background$followUpTime <= 2.6), which(background$metastase1>=1))]
+length(pred.subset)
+
+## Split, at random, into training and validation sets:
+set.seed(100) ## For reproducible results, set seed.
+n.train <- 22
+train.labnr <- sample(pred.subset, n.train)
+test.labnr <- setdiff(pred.subset,train.labnr)
+
+## Find optimal number of genes in regression model using leave-one-out:
+for(i in train.labnr){
+  
+}
+
+```
+

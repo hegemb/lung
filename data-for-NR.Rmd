@@ -1,0 +1,99 @@
+---
+title: "data-for-NR"
+author: "Hege MB"
+date: "8 Feb 2016"
+output: pdf_document
+---
+
+Script used to make data for NR. We need to make the data anonymous, and to provide background information on case-control status, follow-up time (days), and metastasis status(yes/no).
+
+Note: 09FEB2016 we added the id of the matched sample to the backgr object. This was the only change compared to the data set of 08FEB2016.
+
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+dataPath <- "/home/hbo010/lung_cancer/data"
+## Load the R-object:
+load("/home/hbo010/lung_cancer/data/lung_cancer_GE_backgrAdj_qNorm_256ind_11610genes_04FEB2016.Rdata")
+## Get an overview of which objects is in the data file:
+ls()
+```
+
+
+```{r make anonymous}
+log2normData
+log2normDataNR <- log2normData
+sampleNames(log2normDataNR) <- paste0("id_",1:length(sampleNames(log2normData)))
+head(sampleNames(log2normDataNR))
+## check pData
+head(pData(log2normDataNR)) ## Contains sampleID
+## Save new id name and labnr to file for later:
+keyID <- pData(log2normDataNR)
+head(keyID)
+## Write to file:
+write.table(keyID,file = file.path(dataPath, "key_with_idName_and_labnr_data_for_NR_09FEB2016.txt"), col.names = F,row.names = T,quote =F)
+## Small check:
+all(keyID==sampleNames(log2normData))
+all(keyID==rownames(background))
+## Rename to make individuals anonymous:
+class(pData(log2normDataNR))
+pData(log2normDataNR)$sampleID <- sampleNames(log2normDataNR)
+pData(log2normDataNR)
+
+## Talked to Eiliv 08FEB2016, and this will not be done this time:
+# ## make nuID anonymous:
+# featureNames(log2normDataNR) <- paste0("gene_",1:length(featureNames(log2normDataNR)))
+
+## Calculate follow-up time in days (I have only considered years)
+background$followUpDays <- (background$diagnosedato1 - background$BPROVEDATO)
+head(background$followUpDays)/365.25
+head(background$followUpTime)
+
+## Make metasase as a "yes/no" categorical variable:
+background$meta <- as.factor(ifelse(background$metastase1==0,"no","yes"))
+table(background$meta)
+
+## check:
+case_labnr <- as.character(background[background$Case_ctrl=="case","labnr"])
+ctrl_labnr <- as.character(background[case_labnr,"match_labnr"])
+table(background[case_labnr,"meta"])
+table(background[ctrl_labnr,"meta"])
+
+## ID of matching case and control:
+keyID2 <- rownames(keyID)
+names(keyID2) <- keyID$sampleID
+head(keyID2)
+## small check:
+all(names(keyID2) == rownames(background))
+## Make the match id for sampleID:
+match_sampleID <- keyID2[as.character(background$match_labnr)] ## sort ids according to the matching.
+head(match_sampleID)
+match_sampleID <- unname(match_sampleID) ## Remove names.
+
+backgr <- cbind(sampleID=sampleNames(log2normDataNR),match_sampleID,background[,c("Case_ctrl","followUpDays","meta")])
+backgr[1:10,]
+all(rownames(backgr) == rownames(background))
+rownames(backgr) <- sampleNames(log2normDataNR)
+backgr[1:10,]
+
+```
+
+```{r save to file}
+#############################
+#### Save DATA ############
+#############################
+
+## Save data to file:
+files <- file.path(dataPath, paste0("lung_cancer_GE_forNR_backgrAdj_qNorm_log2_11610genes_256ind_09FEB2016.Rdata"))
+if(file.exists(files))
+{
+  print("File already exists. Can not save.")
+} else {
+  print(paste("saving data to file",files,sep=" "))
+  save(log2normDataNR, backgr, file=files)  
+}
+
+ 
+```
+
