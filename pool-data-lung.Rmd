@@ -1,0 +1,110 @@
+---
+title: "pooled-samples-lung"
+author: "Hege MB"
+date: "15 Feb 2016"
+output: html_document
+---
+
+Investigating the pooled samples in the lung cancer data set (named GCF-2015-373 at the NTNU laboratory).
+
+
+```{r import libraries}
+#############################################
+## import libaries
+#############################################
+require(lumi)
+require("arrayQualityMetrics")
+options(bitmapType="cairo")
+require(grid) #for plots with raster
+require(ggplot2)
+require("gridExtra")
+#require(pandoc)
+options(bitmapType='cairo')
+```
+
+
+E-mail from Tom Wheeler, Genomics Core Facility - NTNU (13.JAN 2016):
+Poolen som ble brukt ble opprinnelig laget i forbindelse med et tidligere prosjekt (GCF-2014-317) om "stress" og er vel ment å skulle si noe om batch-effekter og ulikheter mellom prosjekter (?). Jeg er ikke sikker på opphavet til blodprøvene i poolen men vet at det er 15 blodprøver som ble plukket ut spesifikt til formålet. De har følgende nr.:
+
+1 pose prøver til standard labnr 900150-3 900261-4 900324-2 900316-3 900305-1 900406-3 900041-3 900441-1 900234-4 900279-3 900309-3 900407-1 900160-3 900374-3 900311-4
+
+På siste analyse (GCF-2015-373) ble pool 1-4 kjørt gjennom på 1. plate med cRNAsyntese. Pool  5-8 ble kjørt gjennom på plate 2 og  pool 9-12 på plate 3.  
+
+```{r load data}
+#setwd("/home/hbo010/lung_cancer/scripts")
+resultPath <- "/home/hbo010/lung_cancer/results"
+## Load the R-object:
+load("/project/data1/tice/GCF-2015-373_LungGeneExpr/RData/GCF-2015-373_LungGeneExpr.RData")
+## Get an overview of which objects is in the data file:
+ls()
+## Investigate the lumi-object:
+lobj
+
+# Convert factors to character (R defaults to changing all txt to factors when reading csv files)
+i <- sapply(overview.data, is.factor) #identify factors
+overview.data[i] <- lapply(overview.data[i], as.character) #make character using factor levels
+i <- sapply(BloodCancer, is.factor) #identify factors
+BloodCancer[i] <- lapply(BloodCancer[i], as.character) #make character using factor levels
+
+## Investigate the data:
+table(overview.data$Plate)
+## Take a look at how the indiviuals with LABNR POOLX are distriubed:
+poolID <- grep("POOL",overview.data$Sample_ID)
+## Check that the gene expression data and the laboratory information/questionnaire information are sorted in the same order with respect to LABNR:
+all(overview.data$Sample_ID == sampleNames(lobj)) # If TRUE, the OK.
+all(overview.data$Sample_ID == BloodCancer$labnr) ## not true. 
+
+
+## Investigate the data by visual inspection:
+overview.data[c(1:5,poolID),]
+## Most of the "POOLX" individuals does not seem to have a value for "Plate". But they do have a value for "Chip". Lets look at it:
+table(overview.data$Chip) ## Chip value for all women.
+table(overview.data[poolID,"Chip"]) #Chip value for pool ID women.
+table(overview.data[poolID,"Plate"],useNA="a")  ## no infomration for all pooled values.
+
+## Store the POOLX data in a separate lumi-object:
+poolData <- lobj[,poolID]
+## Visual inspection of the pool data: 
+farge <- rep(2:4,each=4)
+boxplot(log2(exprs(poolData)),col=farge)
+title("Two pools per chip, and four pools per plate \n log2 of raw data")
+## We observe some small batch effects. The pool data should be included in the background correction and normalization procedure.
+
+## Zoomed boxplot:
+boxplot(log2(exprs(poolData)),col=farge,ylim=c(5,8))
+```
+
+```{r background adjust all data including the pooled data}
+###############################
+# Perform background correction
+###############################
+## Combine data, status vector (stating for each row if it corresponds to gene or control)
+
+totalData <- t(cbind(exprs,negCtrl)) #770 neg control probes
+dim(totalData)
+status <- c(rep("regular", ncol(exprs)), rep("negative", ncol(negCtrl))) 
+table(status)
+## Background correct the probes using the limma nec function
+data.nec <- nec(totalData, status)  ## this gives same result as adding detection.p.
+
+## Remove the negative probes from the matrix:
+## exprs is not log2 transformed
+exprs.old <- exprs
+data.old <- data
+exprs <- t(data.nec)[,featureNames(data)] ## remove the values of the negative controls
+exprs(data) <- t(exprs) ##make sure exprs of data object is background corrected
+
+
+####
+# Look at the effect of background adjustment:
+####
+dataQ.old <- lumiQ(data.old)
+dataQ.badj <- lumiQ(data)
+
+ ## Plot all densities in one plot (irrespecitve of plate):
+par(mfrow=c(1,2))
+plot(dataQ.old, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main="Raw data")
+plot(dataQ.badj, what="density",col=1,lwd=.3,xlim=c(4,12), ylim=c(0,4.5),main= "Background adjusted data")
+
+```
+
