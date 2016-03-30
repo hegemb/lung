@@ -29,11 +29,16 @@ load("lung_cancer_outliers_removed_n=256_p=47285_04FEB2016.Rdata")
 ls()
 
 ## Adjust the negCtrl object:
+negCtrl <- getControlData(data)
 dim(negCtrl)
 rownames(negCtrl) <- negCtrl$ProbeID ## make ProbeID rowname.
 negCtrl <- negCtrl[,-(1:2)] ## remove the first two columns.
 negCtrl <- t(negCtrl) ## Transpose to get the form nxp (individuals times probes).
 dim(negCtrl)
+
+## Extract the expression values, and transpose:
+exprs <- t(exprs(data))
+
 ```
 
 ```{r Background adjustment}

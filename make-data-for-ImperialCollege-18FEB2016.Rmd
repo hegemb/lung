@@ -5,7 +5,7 @@ date: "18 Feb 2016"
 output: pdf_document
 ---
 
-Want to create a data set that will be shared with Imperial College. For this data, only the gene expression values will be shared, along with laboratory information and case-control status/matching id. They will also have the histology-code. 
+Want to create a data set that will be shared with Imperial College. For this data, only the gene expression values will be shared, along with laboratory information and case-control status/matching id. They will also have the histology-code. The raw data that is not preprocessed, but with outliers removed, will also be added to this file. 
 
 ```{r import libraries}
 #############################################
@@ -76,19 +76,27 @@ all(background$labnr == pData(log2normData)$labnr)#should be true
 all(sampleNames(log2normData) == pData(log2normData)$labnr)#should be true
 ```
 
+```{r Add unpreprocessed data}
+## Load data that has not been preprocessed:
+load("lung_cancer_outliers_removed_n=256_p=47285_04FEB2016.Rdata")
+
+dataRaw <- data
+all(sampleNames(log2normData)==sampleNames(dataRaw)) #Check that individuals are sorted in the same order. Should be true.
+```
+
 ```{r Save data to file}
 #############################
 #### Save DATA ############
 #############################
 
 ## Save data to file:
-files <- file.path("/project/data1/tice/LungNowacMethylation/Smoking", paste0("nowac_lung_cancer_GE_for_ImperialCollege_n=256_p=11610_18FEB2016.Rdata"))
+files <- file.path("/project/data1/tice/LungNowacMethylation/Smoking", paste0("nowac_lung_cancer_GE_for_ImperialCollege_n=256_30MAR2016.Rdata"))
 if(file.exists(files))
 {
   print("File already exists. Can not save.")
 } else {
   print(paste("saving data to file",files,sep=" "))
-  save(labInfo,log2normData, file=files)  
+  save(labInfo,log2normData,dataRaw, file=files)  
 }
 ```
 
